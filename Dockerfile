@@ -1,5 +1,4 @@
 FROM golang:1.9 as build
-MAINTAINER Will Norris <will@willnorris.com>
 
 WORKDIR /go/src/willnorris.com/go/imageproxy
 ADD . .
