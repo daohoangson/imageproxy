@@ -42,7 +42,8 @@ import (
 const defaultMemorySize = 100
 
 var addr = flag.String("addr", "localhost:8080", "TCP address to listen on")
-var whitelist = flag.String("whitelist", "", "comma separated list of allowed remote hosts")
+var remoteHosts = flag.String("remoteHosts", "", "comma separated list of allowed remote hosts")
+var whitelist = flag.String("whitelist", "", "deprecated. use 'remoteHosts' instead")
 var referrers = flag.String("referrers", "", "comma separated list of allowed referring hosts")
 var baseURL = flag.String("baseURL", "", "default base URL for relative remote URLs")
 var cache tieredCache
@@ -51,7 +52,7 @@ var scaleUp = flag.Bool("scaleUp", false, "allow images to scale beyond their or
 var timeout = flag.Duration("timeout", 0, "time limit for requests served by this proxy")
 var verbose = flag.Bool("verbose", false, "print verbose logging messages")
 var version = flag.Bool("version", false, "Deprecated: this flag does nothing")
-var contentTypes = flag.String("contentTypes", "", "comma separated list of allowed content types")
+var contentTypes = flag.String("contentTypes", "image/*", "comma separated list of allowed content types")
 
 func init() {
 	flag.Var(&cache, "cache", "location to cache images (see https://github.com/willnorris/imageproxy#cache)")
@@ -59,10 +60,14 @@ func init() {
 
 func main() {
 	flag.Parse()
+	if *remoteHosts == "" {
+		// backwards compatible with old naming of the flag
+		*remoteHosts = *whitelist
+	}
 
 	p := imageproxy.NewProxy(nil, cache.Cache)
-	if *whitelist != "" {
-		p.Whitelist = strings.Split(*whitelist, ",")
+	if *remoteHosts != "" {
+		p.RemoteHosts = strings.Split(*remoteHosts, ",")
 	}
 	if *referrers != "" {
 		p.Referrers = strings.Split(*referrers, ",")

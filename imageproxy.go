@@ -42,8 +42,11 @@ type Proxy struct {
 	Client *http.Client // client used to fetch remote URLs
 	Cache  Cache        // cache used to cache responses
 
-	// Whitelist specifies a list of remote hosts that images can be
+	// RemoteHosts specifies a list of remote hosts that images can be
 	// proxied from.  An empty list means all hosts are allowed.
+	RemoteHosts []string
+
+	// Whitelist should no longer be used. Use "RemoteHosts" instead.
 	Whitelist []string
 
 	// Referrers, when given, requires that requests to the image
@@ -70,8 +73,8 @@ type Proxy struct {
 	// If true, log additional debug messages
 	Verbose bool
 
-	// ContentTypes specifies a list of content types to allow. An empty list means only image types
-	// are allowed.
+	// ContentTypes specifies a list of content types to allow. An empty
+	// list means all content types are allowed.
 	ContentTypes []string
 }
 
@@ -168,13 +171,14 @@ func (p *Proxy) serveImage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if contentType := p.allowedContentType(resp.Header.Get("Content-Type")); contentType != "" {
-		w.Header().Set("Content-Type", contentType)
-		w.Header().Set("X-Content-Type-Options", "nosniff")
-	} else {
-		http.Error(w, "forbidden content-type", http.StatusForbidden)
+	contentType, _, _ := mime.ParseMediaType(resp.Header.Get("Content-Type"))
+	if resp.ContentLength != 0 && !validContentType(p.ContentTypes, contentType) {
+		msg := fmt.Sprintf("forbidden content-type: %q", contentType)
+		log.Print(msg)
+		http.Error(w, msg, http.StatusForbidden)
 		return
 	}
+	w.Header().Set("Content-Type", contentType)
 
 	copyHeader(w.Header(), resp.Header, "Content-Length")
 
@@ -206,15 +210,19 @@ func copyHeader(dst, src http.Header, keys ...string) {
 // referrer, host, and signature.  It returns an error if the request is not
 // allowed.
 func (p *Proxy) allowed(r *Request) error {
+	if p.RemoteHosts == nil {
+		// backwards compatible with old naming of the field
+		p.RemoteHosts = p.Whitelist
+	}
 	if len(p.Referrers) > 0 && !validReferrer(p.Referrers, r.Original) {
 		return fmt.Errorf("request does not contain an allowed referrer: %v", r)
 	}
 
-	if len(p.Whitelist) == 0 && len(p.SignatureKey) == 0 {
-		return nil // no whitelist or signature key, all requests accepted
+	if len(p.RemoteHosts) == 0 && len(p.SignatureKey) == 0 {
+		return nil // no allowed hosts or signature key, all requests accepted
 	}
 
-	if len(p.Whitelist) > 0 && validHost(p.Whitelist, r.URL) {
+	if len(p.RemoteHosts) > 0 && validHost(p.RemoteHosts, r.URL) {
 		return nil
 	}
 
@@ -225,39 +233,19 @@ func (p *Proxy) allowed(r *Request) error {
 	return fmt.Errorf("request does not contain an allowed host or valid signature: %v", r)
 }
 
-// allowedContentType returns an allowed content type string to use in responses or "" if the
-// content type cannot be used.
-func (p *Proxy) allowedContentType(contentType string) string {
-	mediaType, _, _ := mime.ParseMediaType(contentType)
-	if mediaType == "" {
-		return ""
+// validContentType returns whether contentType matches one of the allowed patterns.
+func validContentType(patterns []string, contentType string) bool {
+	if len(patterns) == 0 {
+		return true
 	}
 
-	if len(p.ContentTypes) == 0 {
-		switch mediaType {
-		case "image/bmp", "image/cgm", "image/g3fax", "image/gif", "image/ief", "image/jp2",
-			"image/jpeg", "image/jpg", "image/pict", "image/png", "image/prs.btif", "image/svg+xml",
-			"image/tiff", "image/vnd.adobe.photoshop", "image/vnd.djvu", "image/vnd.dwg",
-			"image/vnd.dxf", "image/vnd.fastbidsheet", "image/vnd.fpx", "image/vnd.fst",
-			"image/vnd.fujixerox.edmics-mmr", "image/vnd.fujixerox.edmics-rlc",
-			"image/vnd.microsoft.icon", "image/vnd.ms-modi", "image/vnd.net-fpx", "image/vnd.wap.wbmp",
-			"image/vnd.xiff", "image/webp", "image/x-cmu-raster", "image/x-cmx", "image/x-icon",
-			"image/x-macpaint", "image/x-pcx", "image/x-pict", "image/x-portable-anymap",
-			"image/x-portable-bitmap", "image/x-portable-graymap", "image/x-portable-pixmap",
-			"image/x-quicktime", "image/x-rgb", "image/x-xbitmap", "image/x-xpixmap",
-			"image/x-xwindowdump":
-			return mediaType
-		}
-		return ""
-	}
-
-	for _, pattern := range p.ContentTypes {
-		if ok, err := filepath.Match(pattern, mediaType); ok && err == nil {
-			return mediaType
+	for _, pattern := range patterns {
+		if ok, err := filepath.Match(pattern, contentType); ok && err == nil {
+			return true
 		}
 	}
 
-	return ""
+	return false
 }
 
 // validHost returns whether the host in u matches one of hosts.

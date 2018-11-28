@@ -97,7 +97,7 @@ func TestCopyHeader(t *testing.T) {
 }
 
 func TestAllowed(t *testing.T) {
-	whitelist := []string{"good"}
+	remoteHosts := []string{"good"}
 	key := []byte("c0ffee")
 
 	genRequest := func(headers map[string]string) *http.Request {
@@ -109,41 +109,41 @@ func TestAllowed(t *testing.T) {
 	}
 
 	tests := []struct {
-		url       string
-		options   Options
-		whitelist []string
-		referrers []string
-		key       []byte
-		request   *http.Request
-		allowed   bool
+		url         string
+		options     Options
+		remoteHosts []string
+		referrers   []string
+		key         []byte
+		request     *http.Request
+		allowed     bool
 	}{
-		// no whitelist or signature key
+		// no remoteHosts or signature key
 		{"http://test/image", emptyOptions, nil, nil, nil, nil, true},
 
-		// whitelist
-		{"http://good/image", emptyOptions, whitelist, nil, nil, nil, true},
-		{"http://bad/image", emptyOptions, whitelist, nil, nil, nil, false},
+		// remoteHosts
+		{"http://good/image", emptyOptions, remoteHosts, nil, nil, nil, true},
+		{"http://bad/image", emptyOptions, remoteHosts, nil, nil, nil, false},
 
 		// referrer
-		{"http://test/image", emptyOptions, nil, whitelist, nil, genRequest(map[string]string{"Referer": "http://good/foo"}), true},
-		{"http://test/image", emptyOptions, nil, whitelist, nil, genRequest(map[string]string{"Referer": "http://bad/foo"}), false},
-		{"http://test/image", emptyOptions, nil, whitelist, nil, genRequest(map[string]string{"Referer": "MALFORMED!!"}), false},
-		{"http://test/image", emptyOptions, nil, whitelist, nil, genRequest(map[string]string{}), false},
+		{"http://test/image", emptyOptions, nil, remoteHosts, nil, genRequest(map[string]string{"Referer": "http://good/foo"}), true},
+		{"http://test/image", emptyOptions, nil, remoteHosts, nil, genRequest(map[string]string{"Referer": "http://bad/foo"}), false},
+		{"http://test/image", emptyOptions, nil, remoteHosts, nil, genRequest(map[string]string{"Referer": "MALFORMED!!"}), false},
+		{"http://test/image", emptyOptions, nil, remoteHosts, nil, genRequest(map[string]string{}), false},
 
 		// signature key
 		{"http://test/image", Options{Signature: "NDx5zZHx7QfE8E-ijowRreq6CJJBZjwiRfOVk_mkfQQ="}, nil, nil, key, nil, true},
 		{"http://test/image", Options{Signature: "deadbeef"}, nil, nil, key, nil, false},
 		{"http://test/image", emptyOptions, nil, nil, key, nil, false},
 
-		// whitelist and signature
-		{"http://good/image", emptyOptions, whitelist, nil, key, nil, true},
+		// remoteHosts and signature
+		{"http://good/image", emptyOptions, remoteHosts, nil, key, nil, true},
 		{"http://bad/image", Options{Signature: "gWivrPhXBbsYEwpmWAKjbJEiAEgZwbXbltg95O2tgNI="}, nil, nil, key, nil, true},
-		{"http://bad/image", emptyOptions, whitelist, nil, key, nil, false},
+		{"http://bad/image", emptyOptions, remoteHosts, nil, key, nil, false},
 	}
 
 	for _, tt := range tests {
 		p := NewProxy(nil, nil)
-		p.Whitelist = tt.whitelist
+		p.RemoteHosts = tt.remoteHosts
 		p.SignatureKey = tt.key
 		p.Referrers = tt.referrers
 
@@ -159,7 +159,7 @@ func TestAllowed(t *testing.T) {
 }
 
 func TestValidHost(t *testing.T) {
-	whitelist := []string{"a.test", "*.b.test", "*c.test"}
+	remoteHosts := []string{"a.test", "*.b.test", "*c.test"}
 
 	tests := []struct {
 		url   string
@@ -182,8 +182,8 @@ func TestValidHost(t *testing.T) {
 		if err != nil {
 			t.Errorf("error parsing url %q: %v", tt.url, err)
 		}
-		if got, want := validHost(whitelist, u), tt.valid; got != want {
-			t.Errorf("validHost(%v, %q) returned %v, want %v", whitelist, u, got, want)
+		if got, want := validHost(remoteHosts, u), tt.valid; got != want {
+			t.Errorf("validHost(%v, %q) returned %v, want %v", remoteHosts, u, got, want)
 		}
 	}
 }
@@ -326,7 +326,8 @@ func TestProxy_ServeHTTP(t *testing.T) {
 		Client: &http.Client{
 			Transport: testTransport{},
 		},
-		Whitelist: []string{"good.test"},
+		RemoteHosts:  []string{"good.test"},
+		ContentTypes: []string{"image/*"},
 	}
 
 	tests := []struct {
@@ -412,38 +413,50 @@ func TestTransformingTransport(t *testing.T) {
 	}
 }
 
-func TestAllowedContentType(t *testing.T) {
-	p := &Proxy{}
+func TestValidContentType(t *testing.T) {
+	tests := []struct {
+		patterns    []string
+		contentType string
+		valid       bool
+	}{
+		// no patterns
+		{nil, "", true},
+		{nil, "text/plain", true},
+		{[]string{}, "", true},
+		{[]string{}, "text/plain", true},
 
-	for contentType, expected := range map[string]string{
-		"":                   "",
-		"image/png":          "image/png",
-		"image/PNG":          "image/png",
-		"image/PNG; foo=bar": "image/png",
-		"text/html":          "",
-	} {
-		actual := p.allowedContentType(contentType)
-		if actual != expected {
-			t.Errorf("got %v, expected %v for content type: %v", actual, expected, contentType)
-		}
+		// empty pattern
+		{[]string{""}, "", true},
+		{[]string{""}, "text/plain", false},
+
+		// exact match
+		{[]string{"text/plain"}, "", false},
+		{[]string{"text/plain"}, "text", false},
+		{[]string{"text/plain"}, "text/html", false},
+		{[]string{"text/plain"}, "text/plain", true},
+		{[]string{"text/plain"}, "text/plaintext", false},
+		{[]string{"text/plain"}, "text/plain+foo", false},
+
+		// wildcard match
+		{[]string{"text/*"}, "", false},
+		{[]string{"text/*"}, "text", false},
+		{[]string{"text/*"}, "text/html", true},
+		{[]string{"text/*"}, "text/plain", true},
+		{[]string{"text/*"}, "image/jpeg", false},
+
+		{[]string{"image/svg*"}, "image/svg", true},
+		{[]string{"image/svg*"}, "image/svg+html", true},
+
+		// complete wildcard does not match
+		{[]string{"*"}, "text/foobar", false},
+
+		// multiple patterns
+		{[]string{"text/*", "image/*"}, "image/jpeg", true},
 	}
-}
-
-func TestAllowedContentType_Whitelist(t *testing.T) {
-	p := &Proxy{
-		ContentTypes: []string{"foo/*", "bar/baz"},
-	}
-
-	for contentType, expected := range map[string]string{
-		"":          "",
-		"image/png": "",
-		"foo/asdf":  "foo/asdf",
-		"bar/baz":   "bar/baz",
-		"bar/bazz":  "",
-	} {
-		actual := p.allowedContentType(contentType)
-		if actual != expected {
-			t.Errorf("got %v, expected %v for content type: %v", actual, expected, contentType)
+	for _, tt := range tests {
+		got := validContentType(tt.patterns, tt.contentType)
+		if want := tt.valid; got != want {
+			t.Errorf("validContentType(%q, %q) returned %v, want %v", tt.patterns, tt.contentType, got, want)
 		}
 	}
 }
